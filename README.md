@@ -80,6 +80,29 @@ python3 tests/test_secret_gate.py
 
 Reverting the fix (scanning disk instead of the index) turns **2 of 12 red**.
 
+## A test fixture that trips its own hook
+
+The first version of the test suite embedded a real-looking secret as a Python
+literal. The scanner read it, flagged it, and **the tool refused to commit its
+own tests.** The tempting fix is to allowlist the test file — which is how a
+scanner quietly loses its teeth.
+
+The right fix is to not embed `.env`-shaped content in source. Assemble it:
+
+```python
+def _secret_line(value): return "DB_PASSWORD=" + value
+SECRET = _secret_line("Real" + "Secret" + "123")
+```
+
+Same trap in a list of snippets: `"DB_PASSWORD=\nMAIL_PASSWORD="` is **one
+line** of Python source, so the scanner correctly reads a single value spanning
+both keys. Join it instead: `"\n".join(["DB_PASSWORD=", "MAIL_PASSWORD="])`.
+
+This matters beyond this repo: any project whose tests touch secret-shaped
+strings will hit it, and the failure mode is a developer disabling the hook.
+Verified — the test file now scans clean and the suite still goes red when the
+fix is reverted.
+
 ## Limits — stated, not hidden
 
 - The engine is regex-based. A secret in an unusual format can still slip
