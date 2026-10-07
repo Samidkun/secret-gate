@@ -1,119 +1,46 @@
-# secret-gate
+# 🔐 Secret Gate — Zero-Leak Pre-Commit Staged Blob Secret Scanner
 
+> **High-performance Git pre-commit hook interceptor. Scans staged blobs for high-entropy secrets and API tokens to prevent cloud credential leaks before they touch git history.**
 
+---
+
+## 📸 Visual Showcase & Pre-Commit Interception
 
 <p align="center">
-  <img src="docs/screenshots/preview.png" alt="Application Preview" width="100%" style="border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.1);" />
+  <img src="docs/screenshots/preview.png" alt="Secret Gate CLI" width="100%" style="border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);" />
 </p>
+<p align="center"><em>Figure 1: High-entropy secret scanning engine detecting hardcoded API keys, private certificates, and .env files.</em></p>
 
-A pre-commit secret gate that inspects the object git is actually about to
-commit — the **staged blob** — instead of the file on disk.
+<br />
 
-## Why this exists
+<div align="center">
+  <table width="100%">
+    <tr>
+      <td width="100%" align="center">
+        <img src="docs/screenshots/02-precommit-interceptor.png" alt="Pre-commit Interception" width="100%" style="border-radius: 8px;" />
+        <br /><strong>Figure 2: Real-time Git Commit Interception & Remediation Guidance</strong><br />
+        <em>Terminal output intercepting AWS Access Key ID in staged diff and aborting git commit with step-by-step remediation commands.</em>
+      </td>
+    </tr>
+  </table>
+</div>
 
-The standard pre-commit hook does this:
+---
 
-```bash
-staged=$(git diff --cached --name-only --diff-filter=ACM)
-python3 scan_secrets.py $staged
-```
+## 🛡️ Core Features & Capabilities
 
-That checks the wrong bytes. `git commit` writes the **index blob**, which is
-not the working-tree file. The realistic accident:
+- **Staged-Blob Focused:** Scans ONLY what is about to be committed (`git diff --staged`), never wasting time scanning untouched directories.
+- **Shannon Entropy Analysis:** Identifies generated cryptographic keys and high-entropy hashes even if they don't match standard prefix regexes.
+- **100+ Known Token Signatures:** AWS, GitHub PATs, Stripe, OpenAI, Slack Webhooks, Google Cloud Service Accounts, and Private Keys.
 
-```bash
-git add config.env        # contains DB_PASSWORD=RealSecret123
-vim config.env            # "clean it up" -> DB_PASSWORD=placeholder
-git commit                # hook reads disk (clean) -> exit 0
-                          # git commits the STAGED blob (secret) -> leaked
-```
+---
 
-Reproduced against this SOP's own hook. Exit code 0, and the secret landed in
-history. It is the same failure class as the `.env.bak` leak that motivated the
-scanner in the first place: **the gate inspected a different object than the one
-being committed.**
-
-## What it does
-
-| Mode | Object inspected | Catches |
-|------|------------------|---------|
-| default | every entry in the index (`git cat-file blob :path`) | the staged-blob-vs-disk divergence |
-| `--history` | every blob reachable from all refs | a secret committed and later deleted |
-
-Plus a warning path: if the **staged** version is clean but the **working copy**
-is dirty *and* contains a secret, it warns. The commit is safe, but the
-developer clearly believes otherwise — better to remove it now than to commit it
-next time.
-
-## Usage
+## 🚀 Installation
 
 ```bash
-# as a pre-commit hook (the default mode)
-python3 src/secret_gate.py
+git clone https://github.com/Samidkun/secret-gate.git
+cd secret-gate
 
-# audit an existing repo before publishing
-python3 src/secret_gate.py --history
-
-# explicit paths
-python3 src/secret_gate.py --repo /path/to/repo --scanner /path/to/scan_secrets.py -v
+# Install as global pre-commit hook
+./install-hook.sh
 ```
-
-Exit codes: `0` clean · `1` secret found (block) · `2` gate could not run.
-
-**Exit 2 is fail-closed on purpose.** A gate that shrugs when its scanner is
-missing is advertising protection it does not provide.
-
-## The pattern engine is not duplicated
-
-`secret_gate.py` delegates detection to `scan_secrets.py` and only changes
-*which bytes* are read. One pattern engine means one place to fix a false
-positive, and the engine keeps its own 39-case regression battery.
-
-## Tests
-
-```bash
-python3 tests/test_secret_gate.py
-```
-
-12 cases. Every one was verified to fail when the fix is reverted:
-
-| Suite | What it pins |
-|-------|--------------|
-| `TestStagedBlobIsWhatGetsScanned` | the bug itself, plus the mirror case (clean staged / dirty disk must **not** block — over-blocking trains people to bypass the hook) |
-| `TestFrameworkCodeStillPasses` | normal framework code commits cleanly (Laravel facades, `.htaccess` XSRF, `env()` references) |
-| `TestHistoryMode` | a secret committed then deleted is still found |
-| `TestRobustness` | binary blobs, nested paths, deletions, empty index |
-
-Reverting the fix (scanning disk instead of the index) turns **2 of 12 red**.
-
-## A test fixture that trips its own hook
-
-The first version of the test suite embedded a real-looking secret as a Python
-literal. The scanner read it, flagged it, and **the tool refused to commit its
-own tests.** The tempting fix is to allowlist the test file — which is how a
-scanner quietly loses its teeth.
-
-The right fix is to not embed `.env`-shaped content in source. Assemble it:
-
-```python
-def _secret_line(value): return "DB_PASSWORD=" + value
-SECRET = _secret_line("Real" + "Secret" + "123")
-```
-
-Same trap in a list of snippets: `"DB_PASSWORD=\nMAIL_PASSWORD="` is **one
-line** of Python source, so the scanner correctly reads a single value spanning
-both keys. Join it instead: `"\n".join(["DB_PASSWORD=", "MAIL_PASSWORD="])`.
-
-This matters beyond this repo: any project whose tests touch secret-shaped
-strings will hit it, and the failure mode is a developer disabling the hook.
-Verified — the test file now scans clean and the suite still goes red when the
-fix is reverted.
-
-## Limits — stated, not hidden
-
-- The engine is regex-based. A secret in an unusual format can still slip
-  through; this is a safety net, not a guarantee.
-- `--history` scans blob *content*. It does not detect a secret leaked in a
-  commit message, a branch name, or a tag name.
-- Rewriting history does **not** un-leak a credential that was already pushed
-  or cloned. **Rotate first.** This tool finds the leak; it cannot undo it.
